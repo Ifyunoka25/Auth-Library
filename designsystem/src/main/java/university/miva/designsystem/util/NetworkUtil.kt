@@ -3,6 +3,7 @@ package university.miva.designsystem.util
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -34,12 +35,19 @@ class NetworkMonitor(
             connectivityManager.registerNetworkCallback(request, callback)
 
             // Emit current status
-            trySend(connectivityManager.activeNetworkInfo?.isConnected == true)
+            trySend(connectivityManager.isCurrentlyOnline())
 
             awaitClose {
                 connectivityManager.unregisterNetworkCallback(callback)
             }
         }.distinctUntilChanged()
+}
+
+private fun ConnectivityManager.isCurrentlyOnline(): Boolean {
+    val activeNetwork = activeNetwork ?: return false
+    val capabilities = getNetworkCapabilities(activeNetwork) ?: return false
+    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
 }
 
 @Serializable

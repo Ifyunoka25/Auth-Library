@@ -268,7 +268,7 @@ fun ExoVideoPlayer(
 
                     // show solid blue as artwork if the stream is audio-only or takes long to render first frame
                     defaultArtwork = blue.toDrawable()
-                    setUseArtwork(true)
+                    setArtworkDisplayMode(PlayerView.ARTWORK_DISPLAY_MODE_FIT)
                 }
             },
             update = { playerView -> playerView.player = exoPlayer },

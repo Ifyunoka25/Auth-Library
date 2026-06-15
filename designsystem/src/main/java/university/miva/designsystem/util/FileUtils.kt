@@ -7,15 +7,30 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import androidx.annotation.RequiresApi
-import androidx.security.crypto.EncryptedFile
-import androidx.security.crypto.MasterKey
 import org.json.JSONObject
 import timber.log.Timber
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.security.KeyStore
 import java.util.Locale
+import javax.crypto.Cipher
+import javax.crypto.CipherInputStream
+import javax.crypto.CipherOutputStream
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 object FileUtils {
+    private const val ANDROID_KEY_STORE = "AndroidKeyStore"
+    private const val FILE_KEY_ALIAS = "miva_designsystem_file_key"
+    private const val AES_GCM_TRANSFORMATION = "AES/GCM/NoPadding"
+    private const val GCM_TAG_LENGTH_BITS = 128
+    private val ENCRYPTED_FILE_MAGIC = byteArrayOf('M'.code.toByte(), 'I'.code.toByte(), 'V'.code.toByte(), 'A'.code.toByte(), 1)
+
     fun videosDir(context: Context) = File(context.filesDir, "videos").apply { mkdirs() }
 
     fun pdfsDir(context: Context) = File(context.filesDir, "pdfs").apply { mkdirs() }
@@ -37,12 +52,6 @@ object FileUtils {
 
     fun safeName(raw: String) = raw.lowercase().replace("[^a-z0-9._-]".toRegex(), "_")
 
-    fun masterKey(context: Context) =
-        MasterKey
-            .Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-
     /** Encrypt a plaintext file into an .enc file atomically. Deletes target if exists. */
     fun encryptFile(
         context: Context,
@@ -52,19 +61,17 @@ object FileUtils {
         if (!plain.exists()) error("Source not found: ${plain.path}")
         if (encOut.exists()) encOut.delete()
 
-        val ef =
-            EncryptedFile
-                .Builder(
-                    context,
-                    encOut,
-                    masterKey(context),
-                    EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB,
-                ).build()
+        val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateFileSecretKey())
 
-        plain.inputStream().use { input ->
-            ef.openFileOutput().use { encOutStream ->
-                input.copyTo(encOutStream)
-                encOutStream.flush()
+        FileOutputStream(encOut).use { fileOut ->
+            fileOut.write(ENCRYPTED_FILE_MAGIC)
+            fileOut.write(cipher.iv.size)
+            fileOut.write(cipher.iv)
+
+            CipherOutputStream(fileOut, cipher).use { cipherOut ->
+                FileInputStream(plain).use { input -> input.copyTo(cipherOut) }
+                cipherOut.flush()
             }
         }
     }
@@ -76,19 +83,50 @@ object FileUtils {
     ): File {
         val temp = File.createTempFile("play_", ".mp4", context.cacheDir)
 
-        val ef =
-            EncryptedFile
-                .Builder(
-                    context,
-                    encFile,
-                    masterKey(context),
-                    EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB,
-                ).build()
+        FileInputStream(encFile).use { fileIn ->
+            val magic = ByteArray(ENCRYPTED_FILE_MAGIC.size)
+            check(fileIn.read(magic) == ENCRYPTED_FILE_MAGIC.size && magic.contentEquals(ENCRYPTED_FILE_MAGIC)) {
+                "Unsupported encrypted file format: ${encFile.path}"
+            }
 
-        ef.openFileInput().use { encIn ->
-            temp.outputStream().use { out -> encIn.copyTo(out) }
+            val ivSize = fileIn.read()
+            check(ivSize > 0) { "Missing encrypted file initialization vector: ${encFile.path}" }
+            val iv = ByteArray(ivSize)
+            check(fileIn.read(iv) == ivSize) { "Invalid encrypted file initialization vector: ${encFile.path}" }
+
+            val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, getOrCreateFileSecretKey(), GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
+
+            CipherInputStream(fileIn, cipher).use { cipherIn ->
+                temp.outputStream().use { out -> cipherIn.copyTo(out) }
+            }
         }
         return temp
+    }
+
+    private fun getOrCreateFileSecretKey(): SecretKey {
+        val keyStore =
+            KeyStore.getInstance(ANDROID_KEY_STORE).apply {
+                load(null)
+            }
+
+        (keyStore.getEntry(FILE_KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)?.let {
+            return it.secretKey
+        }
+
+        val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEY_STORE)
+        val keySpec =
+            KeyGenParameterSpec
+                .Builder(
+                    FILE_KEY_ALIAS,
+                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+                ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build()
+
+        keyGenerator.init(keySpec)
+        return keyGenerator.generateKey()
     }
 
     data class DownloadMeta(

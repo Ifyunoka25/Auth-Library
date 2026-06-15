@@ -1,19 +1,23 @@
 package university.miva.designsystem.util
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.Location
+import android.os.Build
 import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.Locale
+import kotlin.coroutines.resume
 
 const val DEFAULT_COUNTRY_CODE = "NG"
 
@@ -44,6 +48,7 @@ class LocationHelper(
                 Manifest.permission.ACCESS_COARSE_LOCATION,
             ) == PackageManager.PERMISSION_GRANTED
 
+    @SuppressLint("MissingPermission")
     suspend fun getCountryCode(): String? {
         if (!hasLocationPermissions()) {
             val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
@@ -80,7 +85,7 @@ class LocationHelper(
             val geocoder = Geocoder(context, Locale.getDefault())
             try {
                 // maxResults = 1 because we only need the first (most relevant) address
-                val addresses = geocoder.getFromLocation(location.latitude, location.longitude, 1)
+                val addresses = geocoder.getAddresses(location)
                 if (!addresses.isNullOrEmpty()) {
                     val countryCode = addresses[0].countryCode
                     countryCode
@@ -95,4 +100,19 @@ class LocationHelper(
                 null
             }
         }
+
+    private suspend fun Geocoder.getAddresses(location: Location) =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            suspendCancellableCoroutine { continuation ->
+                getFromLocation(location.latitude, location.longitude, 1) { addresses ->
+                    continuation.resume(addresses)
+                }
+            }
+        } else {
+            getAddressesLegacy(location)
+        }
+
+    @Suppress("DEPRECATION")
+    private fun Geocoder.getAddressesLegacy(location: Location) =
+        getFromLocation(location.latitude, location.longitude, 1)
 }

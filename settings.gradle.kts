@@ -20,3 +20,4 @@ dependencyResolutionManagement {
 rootProject.name = "AuthLibrary"
 include(":designsystem")
 include(":auth")
+include(":guest")

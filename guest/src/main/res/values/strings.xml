@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">guest</string>
+    <string name="no_matching_result">No Matching Result</string>
+</resources>
